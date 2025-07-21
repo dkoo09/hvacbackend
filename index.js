@@ -1,70 +1,61 @@
-const admin = require('firebase-admin');
+const express = require('express');
 const { Resend } = require('resend');
+const admin = require('firebase-admin');
 const cron = require('node-cron');
 require('dotenv').config();
 
-// Initialize Firebase
+const app = express();
+const resend = new Resend(process.env.RESEND_API_KEY);
+
+// Initialize Firebase Admin
 const serviceAccount = require('./serviceAccountKey.json');
 admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount)
+  credential: admin.credential.cert(serviceAccount),
 });
 const db = admin.firestore();
 
-// Initialize Resend
-const resend = new Resend(process.env.RESEND_API_KEY);
+app.get('/', (req, res) => {
+  res.send('HVAC Reminder Server is running..');
+});
 
-// Email Template
-function generateEmail(name) {
-  return {
-    from: 'noreply@yourdomain.com',
-    to: '', // filled dynamically
-    subject: 'Reminder: HVAC Maintenance Due Soon',
-    html: `<p>Hi ${name},</p>
-           <p>This is a friendly reminder that it's time for your HVAC system maintenance.</p>
-           <p>Please schedule a cleaning soon.</p>
-           <p>– Your HVAC Company</p>`
-  };
-}
-
-// Check Firestore daily at midnight
+// Schedule: every day at midnight
 cron.schedule('0 0 * * *', async () => {
-  console.log('[CRON] Checking Firestore for reminders...');
-  const snapshot = await db.collection('customers').get();
-  const today = new Date();
+  console.log('⏰ Running daily email check...');
 
-  snapshot.forEach(async doc => {
-    const { name, email, lastService } = doc.data();
-    const lastDate = new Date(lastService);
-    const oneYear = new Date(lastDate);
-    oneYear.setFullYear(lastDate.getFullYear() + 1);
+  const snapshot = await db.collection('clients').get();
+  const now = new Date();
 
-    const sixMonth = new Date(lastDate);
-    sixMonth.setMonth(lastDate.getMonth() + 6);
+  snapshot.forEach(async (doc) => {
+    const data = doc.data();
+    const lastCleanDate = new Date(data.lastCleanDate);
 
-    const oneWeekBefore = new Date(oneYear);
-    oneWeekBefore.setDate(oneYear.getDate() - 7);
+    const oneYearLater = new Date(lastCleanDate);
+    oneYearLater.setFullYear(oneYearLater.getFullYear() + 1);
 
-    const isSameDay = (d1, d2) =>
-      d1.getFullYear() === d2.getFullYear() &&
-      d1.getMonth() === d2.getMonth() &&
-      d1.getDate() === d2.getDate();
+    const timeDiff = oneYearLater - now;
+    const daysLeft = Math.ceil(timeDiff / (1000 * 60 * 60 * 24));
 
-    if (isSameDay(today, sixMonth) || isSameDay(today, oneWeekBefore)) {
-      const emailData = generateEmail(name);
-      emailData.to = email;
+    if (daysLeft === 0) {
       try {
-        const result = await resend.emails.send(emailData);
-        console.log(`✅ Email sent to ${email}`);
-      } catch (err) {
-        console.error(`❌ Failed to send to ${email}:`, err.message);
+        await resend.emails.send({
+          from: 'hvac-reminder@resend.dev',
+          to: data.email,
+          subject: '⏰ Time to Clean Your HVAC System!',
+          html: `<p>Hi ${data.name},</p>
+                 <p>It’s been a year since your last HVAC cleaning on ${lastCleanDate.toDateString()}.</p>
+                 <p>Please schedule a new cleaning appointment today!</p>
+                 <p>— Your HVAC Team</p>`
+        });
+        console.log(`✅ Email sent to ${data.email}`);
+      } catch (error) {
+        console.error(`❌ Failed to send to ${data.email}:`, error);
       }
     }
   });
 });
 
-// Optional: allow checking via browser
-const express = require('express');
-const app = express();
-app.get('/', (req, res) => res.send('HVAC Reminder Server is running.'));
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+app.listen(PORT, () => {
+  console.log(`✅ Server listening on port ${PORT}`);
+});
+
